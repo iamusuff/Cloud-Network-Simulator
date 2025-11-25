@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    {
+      "id": "N1",
+      "label": "Node1",
+      "x": 309,
+      "y": 196,
+      "is_source": false,
+      "is_destination": false
+    },
+    {
+      "id": "N2",
+      "label": "Node2",
+      "x": 511,
+      "y": 192,
+      "is_source": false,
+      "is_destination": false
+    },
+    {
+      "id": "N3",
+      "label": "Node3",
+      "x": 390,
+      "y": 361,
+      "is_source": false,
+      "is_destination": false
+    }
+  ],
+  "links": [],
+  "timestamp": "2025-11-25T22:41:51.064591"
+}
