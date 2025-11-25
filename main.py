@@ -18,6 +18,10 @@ from packet import (
         Packet, PacketState, PacketAnimator, 
         AnimatorWorker, PacketManager
     )
+from latency import (
+    LatencyThroughputEngine, EnhancedPacketManager, 
+    EnhancedMetricsDisplay, PacketMetrics
+)
 
 # ============================================================================
 # 1. CONFIGURATION
@@ -663,6 +667,11 @@ class ControlPanel:
         tk.Label(self.frame, text="Utilities", 
                 font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
         
+        btn_view_metrics = tk.Button(self.frame, text="📊 View Packet Metrics",
+                                    command=self._on_view_packet_metrics,
+                                    bg="#E6E6FA", width=25)
+        btn_view_metrics.pack(pady=5, padx=10)
+
         btn_clear = tk.Button(self.frame, text="🔄 Clear All",
                              command=self._on_clear_all,
                              bg="#FFD700", width=25)
@@ -888,6 +897,28 @@ class ControlPanel:
             self.network_manager.animator_worker.pause()
             messagebox.showinfo("Info", "Simulation paused")
 
+    def _on_view_packet_metrics(self) -> None:
+        """View metrics for latest delivered packet"""
+        if not self.network_manager.packet_manager.delivered_packets:
+            messagebox.showinfo("Info", "No delivered packets yet")
+            return
+        
+        latest = self.network_manager.packet_manager.delivered_packets[-1]
+        
+        if hasattr(self.network_manager, 'main_window'):
+            metrics = self.network_manager.main_window.latency_engine.get_packet_metrics(
+                latest.id
+            )
+            if metrics:
+                self.network_manager.main_window.metrics_display.update_packet_detail(latest.id)
+                messagebox.showinfo("Packet Metrics",
+                    f"Packet: {latest.id}\n"
+                    f"Path: {' → '.join(metrics.path_nodes)}\n"
+                    f"Actual Latency: {metrics.actual_latency:.2f}ms\n"
+                    f"Theoretical Latency: {metrics.total_latency:.2f}ms\n"
+                    f"Throughput: {metrics.throughput:.2f}Mbps\n"
+                    f"Bottleneck BW: {metrics.bottleneck_bandwidth:.1f}Mbps")
+
 # ============================================================================
 # 6. MAIN WINDOW
 # ============================================================================
@@ -915,14 +946,20 @@ class MainWindow(tk.Tk):
         )
         self.animator_worker.start()  # Start background thread
         
-        # Initialize packet manager
-        self.packet_manager = PacketManager(
+        # Initialize latency/throughput engine (NEW IN STAGE 4)
+        self.latency_engine = LatencyThroughputEngine(
             self.network_manager,
-            self.path_manager,
             self.animator_worker
         )
+
+        # Initialize enhanced packet manager (NEW IN STAGE 4)
+        self.packet_manager = EnhancedPacketManager(
+            self.network_manager,
+            self.path_manager,
+            self.animator_worker,
+            self.latency_engine
+        )
         self.network_manager.packet_manager = self.packet_manager
-        # ← END NEW CODE
         
         self._create_layout()
         self._bind_events()
@@ -1017,7 +1054,23 @@ class MainWindow(tk.Tk):
                                     justify=tk.LEFT, padx=10, pady=10)
         self.metrics_label.pack(anchor="nw", fill=tk.BOTH, expand=True)
 
-        self.metrics_display = MetricsDisplay(self.metrics_label)
+        self.metrics_display = EnhancedMetricsDisplay(
+            self.metrics_label, 
+            self.latency_engine
+        )
+
+        # ========== STATISTICS PANEL (NEW IN STAGE 4) ==========
+        stats_frame = tk.Frame(bottom_frame, bg="lightgreen", 
+                            relief=tk.SUNKEN, bd=1)
+        stats_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Label(stats_frame, text="📊 Real-time Statistics", 
+                font=("Arial", 9, "bold"), bg="lightgreen").pack(anchor="w")
+
+        self.stats_detailed_label = tk.Label(stats_frame, text="",
+                                            font=("Courier", 8), bg="lightgreen",
+                                            justify=tk.LEFT, padx=10, pady=5)
+        self.stats_detailed_label.pack(anchor="nw", fill=tk.BOTH, expand=True)
 
         # Status bar
         status_frame = tk.Frame(self, relief=tk.SUNKEN, bd=1)
@@ -1087,6 +1140,15 @@ class MainWindow(tk.Tk):
         """Called when topology changes"""
         self.network_manager.update_networkx_graph()
         self._update_statistics()
+
+        # Track link metrics
+        if hasattr(self, 'latency_engine'):
+            for link in self.network_manager.links.values():
+                if link.id not in self.latency_engine.link_metrics:
+                    self.latency_engine.create_link_metrics(
+                        link.id, link.node_a.id, link.node_b.id,
+                        link.latency, link.bandwidth
+                    )
     
     def _update_statistics(self) -> None:
         """Update network statistics display"""
@@ -1187,11 +1249,30 @@ class MainWindow(tk.Tk):
                     tags="packet"
                 )
 
+        self.update_statistics_display()
+
     def on_closing(self) -> None:
         """Clean up when window closes"""
         if hasattr(self, 'animator_worker'):
             self.animator_worker.stop()
         self.destroy()
+
+    def update_statistics_display(self) -> None:
+        """Update statistics display"""
+        if self.metrics_display:
+            self.metrics_display.update_display()
+        
+        # Update detailed stats label
+        stats = self.latency_engine.get_summary_statistics()
+        stats_text = (
+            f"Packets: {stats['total_sent']} sent | "
+            f"{stats['total_delivered']} delivered | "
+            f"{stats['total_dropped']} dropped | "
+            f"Delivery Rate: {stats['delivery_rate']:.1f}% | "
+            f"Avg Latency: {stats['avg_latency_ms']:.2f}ms | "
+            f"Avg Throughput: {stats['avg_throughput_mbps']:.2f}Mbps"
+        )
+        self.stats_detailed_label.config(text=stats_text)
 
 # ============================================================================
 # 7. MAIN ENTRY POINT
