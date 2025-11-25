@@ -628,6 +628,37 @@ class ControlPanel:
                                 bg="#FFB6C6", width=25)
         btn_clear_path.pack(pady=5, padx=10)
 
+        # ========== PACKET OPERATIONS (NEW IN STAGE 3) ==========
+        ttk.Separator(self.frame, orient="horizontal").pack(fill="x", pady=5)
+
+        tk.Label(self.frame, text="Packet Sending", 
+                font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
+
+        tk.Label(self.frame, text="Packet Size (bytes):", font=("Arial", 9)).pack(anchor="w", padx=10)
+        self.packet_size_var = tk.IntVar(value=1024)
+        tk.Spinbox(self.frame, from_=64, to=65535,
+                textvariable=self.packet_size_var, width=25).pack(padx=10, pady=(0, 5))
+
+        btn_send_one = tk.Button(self.frame, text="📤 Send 1 Packet",
+                                command=self._on_send_packet,
+                                bg="#90EE90", width=25)
+        btn_send_one.pack(pady=5, padx=10)
+
+        btn_send_burst = tk.Button(self.frame, text="📤 Send 10 Packets",
+                                command=self._on_send_burst,
+                                bg="#90EE90", width=25)
+        btn_send_burst.pack(pady=5, padx=10)
+
+        btn_start_sim = tk.Button(self.frame, text="▶️ Start Simulation",
+                                command=self._on_start_simulation,
+                                bg="#87CEEB", width=25, font=("Arial", 9, "bold"))
+        btn_start_sim.pack(pady=5, padx=10)
+
+        btn_pause_sim = tk.Button(self.frame, text="⏸️ Pause Simulation",
+                                command=self._on_pause_simulation,
+                                bg="#FFD700", width=25)
+        btn_pause_sim.pack(pady=5, padx=10)
+
         # ========== UTILITIES ==========
         tk.Label(self.frame, text="Utilities", 
                 font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
@@ -798,6 +829,65 @@ class ControlPanel:
         self.canvas_renderer.clear_highlights()
         self.update_callback()
 
+    def _on_send_packet(self) -> None:
+        """Send a single packet"""
+        src = self.source_var.get()
+        dst = self.dest_var.get()
+        
+        if not src or not dst:
+            messagebox.showwarning("Warning", "Select source and destination")
+            return
+        
+        src_id = src.split(":")[0]
+        dst_id = dst.split(":")[0]
+        
+        packet = self.network_manager.packet_manager.create_packet(
+            src_id, dst_id, 
+            self.packet_size_var.get()
+        )
+        
+        if packet:
+            self.network_manager.packet_manager.start_packet_animation(packet)
+            messagebox.showinfo("Success", f"Packet {packet.id} sent!")
+        else:
+            messagebox.showerror("Error", "Failed to create packet")
+
+    def _on_send_burst(self) -> None:
+        """Send 10 packets in rapid succession"""
+        src = self.source_var.get()
+        dst = self.dest_var.get()
+        
+        if not src or not dst:
+            messagebox.showwarning("Warning", "Select source and destination")
+            return
+        
+        src_id = src.split(":")[0]
+        dst_id = dst.split(":")[0]
+        
+        count = 0
+        for i in range(10):
+            packet = self.network_manager.packet_manager.create_packet(
+                src_id, dst_id,
+                self.packet_size_var.get()
+            )
+            if packet:
+                self.network_manager.packet_manager.start_packet_animation(packet)
+                count += 1
+        
+        messagebox.showinfo("Success", f"{count} packets sent!")
+
+    def _on_start_simulation(self) -> None:
+        """Start/resume animation"""
+        if hasattr(self.network_manager, 'packet_manager'):
+            self.network_manager.animator_worker.resume()
+            messagebox.showinfo("Info", "Simulation started")
+
+    def _on_pause_simulation(self) -> None:
+        """Pause animation"""
+        if hasattr(self.network_manager, 'packet_manager'):
+            self.network_manager.animator_worker.pause()
+            messagebox.showinfo("Info", "Simulation paused")
+
 # ============================================================================
 # 6. MAIN WINDOW
 # ============================================================================
@@ -813,10 +903,25 @@ class MainWindow(tk.Tk):
         
         self.network_manager = NetworkManager()
         
-        # ← ADD THESE 3 LINES
         # Initialize routing
         self.path_manager = PathManager(self.network_manager)
-        self.network_manager.main_window = self  # So routing can update display
+        self.network_manager.main_window = self
+        
+        # ← ADD THESE 3 BLOCKS (Stage 3)
+        # Initialize animation worker (background thread for smooth animation)
+        self.animator_worker = AnimatorWorker(
+            update_callback=self._on_animation_update,
+            frame_rate=30  # 30 FPS
+        )
+        self.animator_worker.start()  # Start background thread
+        
+        # Initialize packet manager
+        self.packet_manager = PacketManager(
+            self.network_manager,
+            self.path_manager,
+            self.animator_worker
+        )
+        self.network_manager.packet_manager = self.packet_manager
         # ← END NEW CODE
         
         self._create_layout()
@@ -824,6 +929,9 @@ class MainWindow(tk.Tk):
         
         # Display status
         self.status_label.config(text="✓ Ready. Click 'Add Node' button to start.")
+        
+        # ← ADD THIS LINE (cleanup on close)
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def _create_layout(self) -> None:
         """Create main window layout"""
@@ -867,7 +975,7 @@ class MainWindow(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         self.control_panel = ControlPanel(scrollable_frame, self.network_manager, 
-                                         None, self._on_update)
+                                        self.canvas_renderer, self._on_update)
         
         # ========== CENTER: CANVAS ==========
         center_frame = tk.Frame(main_container)
@@ -1031,9 +1139,61 @@ class MainWindow(tk.Tk):
         if self.metrics_display:
             self.metrics_display.update_path_display(path_info)
 
+    def _on_animation_update(self, active_packets: Dict, 
+                            animators: Dict, sim_time: float) -> None:
+        """Called from animator thread each frame"""
+        packets_to_advance = []
+        
+        for pkt_id, animator in animators.items():
+            # Check if animator finished this link
+            if animator.update(sim_time):
+                packets_to_advance.append(pkt_id)
+        
+        # Advance packets to next link (using main thread)
+        if packets_to_advance:
+            self.after(0, lambda: self._advance_packets(packets_to_advance))
+        
+        # Redraw canvas from main thread
+        self.after(0, self._redraw_canvas_animation)
+
+    def _advance_packets(self, packet_ids: List[str]) -> None:
+        """Advance finished packets to next link"""
+        for pkt_id in packet_ids:
+            if pkt_id in self.packet_manager.active_packets:
+                packet = self.packet_manager.active_packets[pkt_id]
+                self.packet_manager.advance_packet(packet)
+
+    def _redraw_canvas_animation(self) -> None:
+        """Redraw canvas with animated packet positions"""
+        # Clear packet drawings (but keep topology)
+        self.canvas.delete("packet")
+        
+        # Draw each active packet at its current position
+        for pkt_id, animator in self.animator_worker.animators.items():
+            pos = animator.get_current_position(self.animator_worker.sim_time)
+            if pos:
+                x, y = pos
+                self.canvas.create_oval(
+                    x - 5, y - 5, x + 5, y + 5,
+                    fill="red", outline="darkred", width=2,
+                    tags="packet"
+                )
+                # Draw packet ID
+                self.canvas.create_text(
+                    x, y - 10,
+                    text=pkt_id,
+                    font=("Arial", 7),
+                    fill="red",
+                    tags="packet"
+                )
+
+    def on_closing(self) -> None:
+        """Clean up when window closes"""
+        if hasattr(self, 'animator_worker'):
+            self.animator_worker.stop()
+        self.destroy()
+
 # ============================================================================
-# 7. MAIN ENTRY POINT
-# 7. MAIN ENTRY POINT
 # 7. MAIN ENTRY POINT
 # ============================================================================
 
