@@ -22,6 +22,10 @@ from latency import (
     LatencyThroughputEngine, EnhancedPacketManager, 
     EnhancedMetricsDisplay, PacketMetrics
 )
+from congestion import (
+    CongestionController, LinkQueue, DropPolicy,
+    QueueAwarePacketManager, CongestionMetricsDisplay
+)
 
 # ============================================================================
 # 1. CONFIGURATION
@@ -952,12 +956,19 @@ class MainWindow(tk.Tk):
             self.animator_worker
         )
 
-        # Initialize enhanced packet manager (NEW IN STAGE 4)
-        self.packet_manager = EnhancedPacketManager(
+        # Initialize congestion controller (NEW IN STAGE 5)
+        self.congestion_controller = CongestionController(
+            self.network_manager,
+            self.animator_worker
+        )
+
+        # Initialize queue-aware packet manager (NEW IN STAGE 5)
+        self.packet_manager = QueueAwarePacketManager(
             self.network_manager,
             self.path_manager,
             self.animator_worker,
-            self.latency_engine
+            self.latency_engine,
+            self.congestion_controller
         )
         self.network_manager.packet_manager = self.packet_manager
         
@@ -1072,6 +1083,25 @@ class MainWindow(tk.Tk):
                                             justify=tk.LEFT, padx=10, pady=5)
         self.stats_detailed_label.pack(anchor="nw", fill=tk.BOTH, expand=True)
 
+        # ========== CONGESTION PANEL (NEW IN STAGE 5) ==========
+        congestion_frame = tk.Frame(bottom_frame, bg="#FFE4E1",  # Light red
+                                relief=tk.SUNKEN, bd=1)
+        congestion_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        tk.Label(congestion_frame, text="🔴 Congestion Control",
+                font=("Arial", 9, "bold"), bg="#FFE4E1").pack(anchor="w")
+
+        self.congestion_label = tk.Label(congestion_frame, text="",
+                                        font=("Courier", 8), bg="#FFE4E1",
+                                        justify=tk.LEFT, padx=10, pady=5)
+        self.congestion_label.pack(anchor="nw", fill=tk.BOTH, expand=True)
+
+        self.congestion_metrics_display = CongestionMetricsDisplay(
+            self.congestion_label,
+            self.congestion_controller,
+            self.latency_engine
+        )
+
         # Status bar
         status_frame = tk.Frame(self, relief=tk.SUNKEN, bd=1)
         status_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -1148,6 +1178,15 @@ class MainWindow(tk.Tk):
                     self.latency_engine.create_link_metrics(
                         link.id, link.node_a.id, link.node_b.id,
                         link.latency, link.bandwidth
+                    )
+
+        # Create queues for links
+        if hasattr(self, 'congestion_controller'):
+            for link in self.network_manager.links.values():
+                if link.id not in self.congestion_controller.link_queues:
+                    self.congestion_controller.create_link_queue(
+                        link.id, link.queue_size,
+                        drop_policy=DropPolicy.TAIL_DROP
                     )
     
     def _update_statistics(self) -> None:
@@ -1227,6 +1266,8 @@ class MainWindow(tk.Tk):
 
     def _redraw_canvas_animation(self) -> None:
         """Redraw canvas with animated packet positions"""
+        # Redraw all links to show current congestion colors
+        self.canvas_renderer.redraw_all()
         # Clear packet drawings (but keep topology)
         self.canvas.delete("packet")
         
@@ -1250,6 +1291,8 @@ class MainWindow(tk.Tk):
                 )
 
         self.update_statistics_display()
+        # Update congestion display
+        self.update_congestion_display()
 
     def on_closing(self) -> None:
         """Clean up when window closes"""
@@ -1273,6 +1316,11 @@ class MainWindow(tk.Tk):
             f"Avg Throughput: {stats['avg_throughput_mbps']:.2f}Mbps"
         )
         self.stats_detailed_label.config(text=stats_text)
+
+    def update_congestion_display(self) -> None:
+        """Update congestion metrics display"""
+        if hasattr(self, 'congestion_metrics_display'):
+            self.congestion_metrics_display.update_display()
 
 # ============================================================================
 # 7. MAIN ENTRY POINT

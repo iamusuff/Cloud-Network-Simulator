@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 import time
-from .packet import Packet
+from packet import Packet
 
 # ============================================================================
 # 1. LINK LATENCY & BANDWIDTH TRACKER
