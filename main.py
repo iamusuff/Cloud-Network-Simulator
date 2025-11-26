@@ -26,6 +26,7 @@ from congestion import (
     CongestionController, LinkQueue, DropPolicy,
     QueueAwarePacketManager, CongestionMetricsDisplay
 )
+from export import DataExportEngine, SimulationReportGenerator
 
 # ============================================================================
 # 1. CONFIGURATION
@@ -676,6 +677,35 @@ class ControlPanel:
                                     bg="#E6E6FA", width=25)
         btn_view_metrics.pack(pady=5, padx=10)
 
+        # ========== DATA EXPORT (NEW IN STAGE 6) ==========
+        ttk.Separator(self.frame, orient="horizontal").pack(fill="x", pady=5)
+
+        tk.Label(self.frame, text="Data Export", 
+                font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
+
+        btn_export_all = tk.Button(self.frame, text="💾 Export All Data",
+                                command=self._on_export_all,
+                                bg="#DDA0DD", width=25, font=("Arial", 9, "bold"))
+        btn_export_all.pack(pady=5, padx=10)
+
+        btn_export_metrics = tk.Button(self.frame, text="📊 Export Metrics (CSV)",
+                                    command=self._on_export_metrics,
+                                    bg="#98FB98", width=25)
+        btn_export_metrics.pack(pady=5, padx=10)
+
+        btn_export_congestion = tk.Button(self.frame, text="🔴 Export Congestion (CSV)",
+                                        command=self._on_export_congestion,
+                                        bg="#FFB6C1", width=25)
+        btn_export_congestion.pack(pady=5, padx=10)
+
+        btn_export_report = tk.Button(self.frame, text="📄 Export Report (TXT)",
+                                    command=self._on_export_report,
+                                    bg="#F0E68C", width=25)
+        btn_export_report.pack(pady=5, padx=10)
+
+        # ========== UTILITIES ==========
+        ttk.Separator(self.frame, orient="horizontal").pack(fill="x", pady=5)
+
         btn_clear = tk.Button(self.frame, text="🔄 Clear All",
                              command=self._on_clear_all,
                              bg="#FFD700", width=25)
@@ -762,11 +792,14 @@ class ControlPanel:
     
     def _on_clear_all(self) -> None:
         """Clear entire network"""
-        if messagebox.askyesno("Confirm", "Clear entire network?"):
+        # ← UPDATE THIS (add confirmation about exporting)
+        if messagebox.askyesno("Confirm Clear", 
+            "Clear entire network? (You can export data first)"):
             self.network_manager.clear_all()
             self.canvas_renderer.redraw_all()
             self.update_node_list()
             self.update_callback()
+            messagebox.showinfo("Success", "Network cleared")
     
     def _on_save(self) -> None:
         """Save topology to JSON"""
@@ -922,6 +955,47 @@ class ControlPanel:
                     f"Theoretical Latency: {metrics.total_latency:.2f}ms\n"
                     f"Throughput: {metrics.throughput:.2f}Mbps\n"
                     f"Bottleneck BW: {metrics.bottleneck_bandwidth:.1f}Mbps")
+                
+    def _on_export_all(self) -> None:
+        """Export all data"""
+        results = self.network_manager.export_engine.export_all()
+        
+        success_count = sum(1 for v in results.values() if v)
+        messagebox.showinfo("Export Complete",
+            f"Files exported:\n"
+            f"✓ Metrics: {results['metrics']}\n"
+            f"✓ Congestion: {results['congestion']}\n"
+            f"✓ Summary: {results['summary']}\n"
+            f"✓ Topology: {results['topology']}\n\n"
+            f"Check your CloudNetworkSimulator folder!")
+
+    def _on_export_metrics(self) -> None:
+        """Export metrics CSV"""
+        if not self.network_manager.packet_manager.delivered_packets:
+            messagebox.showwarning("Warning", "No delivered packets to export")
+            return
+        
+        if self.network_manager.export_engine.export_metrics_to_csv():
+            messagebox.showinfo("Success", "Metrics exported to CSV")
+        else:
+            messagebox.showerror("Error", "Failed to export metrics")
+
+    def _on_export_congestion(self) -> None:
+        """Export congestion CSV"""
+        if self.network_manager.congestion_controller.get_queue_history():
+            if self.network_manager.export_engine.export_congestion_to_csv():
+                messagebox.showinfo("Success", "Congestion data exported to CSV")
+            else:
+                messagebox.showerror("Error", "Failed to export congestion data")
+        else:
+            messagebox.showwarning("Warning", "No congestion data to export")
+
+    def _on_export_report(self) -> None:
+        """Export report"""
+        if self.network_manager.report_generator.generate_report():
+            messagebox.showinfo("Success", "Report exported to TXT")
+        else:
+            messagebox.showerror("Error", "Failed to export report")
 
 # ============================================================================
 # 6. MAIN WINDOW
@@ -959,6 +1033,21 @@ class MainWindow(tk.Tk):
         # Initialize congestion controller (NEW IN STAGE 5)
         self.congestion_controller = CongestionController(
             self.network_manager,
+            self.animator_worker
+        )
+
+        # Initialize export engine (NEW IN STAGE 6)
+        self.export_engine = DataExportEngine(
+            self.network_manager,
+            self.latency_engine,
+            self.congestion_controller
+        )
+
+        # Initialize report generator (NEW IN STAGE 6)
+        self.report_generator = SimulationReportGenerator(
+            self.network_manager,
+            self.latency_engine,
+            self.congestion_controller,
             self.animator_worker
         )
 
@@ -1225,15 +1314,24 @@ class MainWindow(tk.Tk):
     
     def _on_about(self) -> None:
         """Show about dialog"""
-        messagebox.showinfo("About", 
-            "Cloud Network Simulator - Stage 1\n\n"
-            "Topology Editor\n\n"
+        messagebox.showinfo("About Cloud Network Simulator",
+            "Cloud Network Simulator v1.0\n\n"
+            "A complete network simulation platform featuring:\n\n"
+            "✓ Stage 1: Network Topology Editor\n"
+            "✓ Stage 2: Dijkstra Routing\n"
+            "✓ Stage 3: Packet Animation\n"
+            "✓ Stage 4: Latency & Throughput\n"
+            "✓ Stage 5: Congestion Control\n"
+            "✓ Stage 6: Data Export & Reporting\n\n"
             "Features:\n"
-            "• Add/delete nodes by clicking\n"
-            "• Drag nodes to reposition\n"
-            "• Create links with custom latency & bandwidth\n"
-            "• Save topology to JSON\n\n"
-            "Version 1.0")
+            "• Interactive topology design\n"
+            "• Smooth 30 FPS animation\n"
+            "• Accurate latency calculations\n"
+            "• Queue-based congestion\n"
+            "• TCP-like flow control\n"
+            "• Comprehensive data export\n\n"
+            "© 2024 Cloud Network Simulator\n"
+            "Educational Use Only")
 
     def update_metrics_display(self, path_info: PathInfo) -> None:
         """Update metrics display with path info"""
